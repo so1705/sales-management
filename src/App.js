@@ -3,7 +3,6 @@ import {
   Calendar, UserPlus, Trash2, Plus, DollarSign, Users, TrendingUp
 } from 'lucide-react';
 
-
 const SalesManagementSheet = () => {
   // ローカルストレージからデータを読み込む
   const loadData = () => {
@@ -75,17 +74,42 @@ const SalesManagementSheet = () => {
   };
 
   const updateRow = (id, field, value) => {
-    setDataRows(dataRows.map(row => 
+    setDataRows(dataRows.map(row =>
       row.id === id ? { ...row, [field]: value } : row
     ));
   };
 
   const calculateProfit = (sales, cost) => sales - cost;
 
-  // Filter data by selected month
-  const monthlyData = dataRows.filter(row => {
-    return row.date.startsWith(selectedMonth);
-  });
+  // -------------------------------
+  // ★追加機能：日付順に自動ソート（表示用）
+  // -------------------------------
+  const monthlyData = dataRows.filter(row => row.date.startsWith(selectedMonth));
+
+  // staffList順で並べたい場合に備えて順序マップ（同日付の並びを安定させる）
+  const staffOrder = {};
+  staffList.forEach((name, idx) => { staffOrder[name] = idx; });
+
+  const sortedMonthlyData = monthlyData
+    .slice()
+    .sort((a, b) => {
+      // 1) 日付で昇順
+      const da = new Date(a.date).getTime();
+      const db = new Date(b.date).getTime();
+      if (da !== db) return da - db;
+
+      // 2) 同じ日付なら担当者で並べる（staffList順 → なければ文字順）
+      const ai = staffOrder[a.staff];
+      const bi = staffOrder[b.staff];
+      const aHas = Number.isFinite(ai);
+      const bHas = Number.isFinite(bi);
+
+      if (aHas && bHas) return ai - bi;
+      if (aHas && !bHas) return -1;
+      if (!aHas && bHas) return 1;
+
+      return (a.staff || '').localeCompare(b.staff || '', 'ja');
+    });
 
   // Generate months for 3 years (2024-2026)
   const generateMonths = () => {
@@ -98,17 +122,17 @@ const SalesManagementSheet = () => {
     }
     return months.reverse();
   };
-  
+
   const availableMonths = generateMonths();
 
-  // Monthly totals
-  const totalSales = monthlyData.reduce((sum, row) => sum + Number(row.sales), 0);
-  const totalCost = monthlyData.reduce((sum, row) => sum + Number(row.cost), 0);
+  // Monthly totals（※ソート後のデータを基準に統一）
+  const totalSales = sortedMonthlyData.reduce((sum, row) => sum + Number(row.sales), 0);
+  const totalCost = sortedMonthlyData.reduce((sum, row) => sum + Number(row.cost), 0);
   const totalProfit = totalSales - totalCost;
 
   // Ranking by staff
   const staffStats = {};
-  monthlyData.forEach(row => {
+  sortedMonthlyData.forEach(row => {
     if (!staffStats[row.staff]) {
       staffStats[row.staff] = { profit: 0, days: 0 };
     }
@@ -121,11 +145,11 @@ const SalesManagementSheet = () => {
     .sort((a, b) => b.profit - a.profit);
 
   // Daily matrix
-  const uniqueDates = [...new Set(monthlyData.map(row => row.date))].sort();
-  const uniqueStaff = [...new Set(monthlyData.map(row => row.staff))];
+  const uniqueDates = [...new Set(sortedMonthlyData.map(row => row.date))].sort();
+  const uniqueStaff = [...new Set(sortedMonthlyData.map(row => row.staff))];
 
   const getProfit = (date, staff) => {
-    const row = monthlyData.find(r => r.date === date && r.staff === staff);
+    const row = sortedMonthlyData.find(r => r.date === date && r.staff === staff);
     return row ? calculateProfit(Number(row.sales), Number(row.cost)) : null;
   };
 
@@ -134,7 +158,7 @@ const SalesManagementSheet = () => {
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold text-gray-800">営業チーム売上管理システム</h1>
-          
+
           <div className="flex items-center gap-3">
             <Calendar className="text-gray-600" size={20} />
             <select
@@ -150,35 +174,32 @@ const SalesManagementSheet = () => {
             </select>
           </div>
         </div>
-        
+
         <div className="flex gap-2 mb-6 border-b border-gray-200">
           <button
             onClick={() => setActiveTab('data')}
-            className={`px-6 py-3 font-semibold transition-colors ${
-              activeTab === 'data'
+            className={`px-6 py-3 font-semibold transition-colors ${activeTab === 'data'
                 ? 'text-blue-600 border-b-2 border-blue-600'
                 : 'text-gray-600 hover:text-gray-800'
-            }`}
+              }`}
           >
             📊 data (入力用)
           </button>
           <button
             onClick={() => setActiveTab('dashboard')}
-            className={`px-6 py-3 font-semibold transition-colors ${
-              activeTab === 'dashboard'
+            className={`px-6 py-3 font-semibold transition-colors ${activeTab === 'dashboard'
                 ? 'text-blue-600 border-b-2 border-blue-600'
                 : 'text-gray-600 hover:text-gray-800'
-            }`}
+              }`}
           >
             📈 dashboard (ダッシュボード)
           </button>
           <button
             onClick={() => setActiveTab('settings')}
-            className={`px-6 py-3 font-semibold transition-colors ${
-              activeTab === 'settings'
+            className={`px-6 py-3 font-semibold transition-colors ${activeTab === 'settings'
                 ? 'text-blue-600 border-b-2 border-blue-600'
                 : 'text-gray-600 hover:text-gray-800'
-            }`}
+              }`}
           >
             ⚙️ settings (担当者管理)
           </button>
@@ -187,7 +208,7 @@ const SalesManagementSheet = () => {
         {activeTab === 'settings' && (
           <div className="bg-white rounded-lg shadow-md p-6">
             <h2 className="text-xl font-bold text-gray-700 mb-4">担当者リスト管理</h2>
-            
+
             <div className="mb-6">
               <div className="flex gap-2 mb-4">
                 <input
@@ -238,7 +259,7 @@ const SalesManagementSheet = () => {
                 行を追加
               </button>
             </div>
-            
+
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
@@ -252,7 +273,7 @@ const SalesManagementSheet = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {monthlyData.map(row => (
+                  {sortedMonthlyData.map(row => (
                     <tr key={row.id} className="hover:bg-gray-50">
                       <td className="border border-gray-300 px-2 py-2">
                         <input
@@ -319,7 +340,7 @@ const SalesManagementSheet = () => {
                 </div>
                 <p className="text-4xl font-bold">¥{totalSales.toLocaleString()}</p>
               </div>
-              
+
               <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg shadow-lg p-6 text-white">
                 <div className="flex items-center gap-3 mb-2">
                   <Users size={32} />
