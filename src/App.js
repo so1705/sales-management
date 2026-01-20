@@ -13,6 +13,9 @@ import {
 
 const DOC_PATH = { col: "teams", id: "team_default" };
 
+// ここだけ追加：月の下限（2025年11月）
+const MIN_MONTH = "2025-11";
+
 const SalesManagementSheet = () => {
   // ----------------------------
   // Local initial loaders (fallback)
@@ -41,7 +44,14 @@ const SalesManagementSheet = () => {
   // State
   // ----------------------------
   const [activeTab, setActiveTab] = useState("data");
-  const [selectedMonth, setSelectedMonth] = useState("2025-01");
+
+  // ここだけ変更：起動時は「今の年月」(ただしMIN_MONTHより前ならMIN_MONTH)
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return ym < MIN_MONTH ? MIN_MONTH : ym;
+  });
+
   const [staffList, setStaffList] = useState(loadStaffFallback);
   const [newStaffName, setNewStaffName] = useState("");
   const [dataRows, setDataRows] = useState(loadDataFallback);
@@ -50,9 +60,6 @@ const SalesManagementSheet = () => {
   const [syncStatus, setSyncStatus] = useState("connecting"); // connecting | synced | error
   const isApplyingRemote = useRef(false);
   const saveTimer = useRef(null);
-
-  // ★追加：Firestoreから「初回読込」が終わったか（これがないとfallbackが上書き保存されてリセット事故が起きる）
-  const hasHydrated = useRef(false);
 
   // ----------------------------
   // Firestore: realtime load (onSnapshot)
@@ -73,10 +80,6 @@ const SalesManagementSheet = () => {
               updatedAt: Date.now(),
             });
             isApplyingRemote.current = false;
-
-            // ★追加：この時点で初回の同期が完了した扱いにする
-            hasHydrated.current = true;
-
             setSyncStatus("synced");
             return;
           } catch (e) {
@@ -89,21 +92,13 @@ const SalesManagementSheet = () => {
 
         try {
           const d = snap.data();
-          const remoteStaff = Array.isArray(d.staffList)
-            ? d.staffList
-            : loadStaffFallback();
-          const remoteRows = Array.isArray(d.salesData)
-            ? d.salesData
-            : loadDataFallback();
+          const remoteStaff = Array.isArray(d.staffList) ? d.staffList : loadStaffFallback();
+          const remoteRows = Array.isArray(d.salesData) ? d.salesData : loadDataFallback();
 
           isApplyingRemote.current = true;
           setStaffList(remoteStaff);
           setDataRows(remoteRows);
           isApplyingRemote.current = false;
-
-          // ★追加：Firestoreのデータを1回でも受け取ったら、以後保存OK
-          hasHydrated.current = true;
-
           setSyncStatus("synced");
         } catch (e) {
           console.error(e);
@@ -124,9 +119,6 @@ const SalesManagementSheet = () => {
   // Firestore: save (debounced)
   // ----------------------------
   const scheduleSave = () => {
-    // ★追加：初回読み込みが終わっていないうちは保存しない（＝fallback上書き事故を防ぐ）
-    if (!hasHydrated.current) return;
-
     if (isApplyingRemote.current) return;
 
     // debounce
@@ -202,25 +194,46 @@ const SalesManagementSheet = () => {
   // ----------------------------
   // Month list
   // ----------------------------
+  // ここだけ変更：2025-11より前は生成しない
   const generateMonths = () => {
     const months = [];
-    for (let year = 2024; year <= 2026; year++) {
-      for (let month = 1; month <= 12; month++) {
+
+    for (let year = 2025; year <= 2026; year++) {
+      const startMonth = year === 2025 ? 11 : 1;
+      for (let month = startMonth; month <= 12; month++) {
         const monthStr = `${year}-${String(month).padStart(2, "0")}`;
         months.push(monthStr);
       }
     }
-    return months.reverse();
+
+    return months.reverse(); // 新しい月が上
   };
+
   const availableMonths = useMemo(() => generateMonths(), []);
+
+  // ここだけ追加：起動時に「今月」がリスト外なら、範囲内に丸める
+  useEffect(() => {
+    if (!availableMonths.length) return;
+
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+    const maxMonth = availableMonths[0]; // 生成後 reverse してるので先頭が最大
+    const minMonth = availableMonths[availableMonths.length - 1];
+
+    let target = ym;
+    if (target < minMonth) target = minMonth;
+    if (target > maxMonth) target = maxMonth;
+
+    if (target !== selectedMonth) setSelectedMonth(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableMonths]);
 
   // ----------------------------
   // Filter + SORT by date automatically (important)
   // ----------------------------
   const monthlyData = useMemo(() => {
-    const filtered = dataRows.filter((row) =>
-      String(row.date || "").startsWith(selectedMonth)
-    );
+    const filtered = dataRows.filter((row) => String(row.date || "").startsWith(selectedMonth));
     // 日付昇順 → 同じ日付なら staff → さらに id
     filtered.sort((a, b) => {
       const da = String(a.date || "");
@@ -246,10 +259,7 @@ const SalesManagementSheet = () => {
     if (!staffStats[row.staff]) {
       staffStats[row.staff] = { profit: 0, days: 0 };
     }
-    staffStats[row.staff].profit += calculateProfit(
-      Number(row.sales),
-      Number(row.cost)
-    );
+    staffStats[row.staff].profit += calculateProfit(Number(row.sales), Number(row.cost));
     staffStats[row.staff].days += 1;
   });
 
@@ -259,9 +269,7 @@ const SalesManagementSheet = () => {
 
   // Daily matrix
   const uniqueDates = [...new Set(monthlyData.map((row) => row.date))].sort();
-  const uniqueStaff = [...new Set(monthlyData.map((row) => row.staff))].filter(
-    Boolean
-  );
+  const uniqueStaff = [...new Set(monthlyData.map((row) => row.staff))].filter(Boolean);
 
   const getProfit = (date, staff) => {
     const row = monthlyData.find((r) => r.date === date && r.staff === staff);
@@ -347,9 +355,7 @@ const SalesManagementSheet = () => {
 
         {activeTab === "settings" && (
           <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-bold text-gray-700 mb-4">
-              担当者リスト管理
-            </h2>
+            <h2 className="text-xl font-bold text-gray-700 mb-4">担当者リスト管理</h2>
 
             <div className="mb-6">
               <div className="flex gap-2 mb-4">
@@ -394,8 +400,7 @@ const SalesManagementSheet = () => {
           <div className="bg-white rounded-lg shadow-md p-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold text-gray-700">
-                データ入力シート - {selectedMonth.split("-")[0]}年
-                {selectedMonth.split("-")[1]}月
+                データ入力シート - {selectedMonth.split("-")[0]}年{selectedMonth.split("-")[1]}月
               </h2>
               <button
                 onClick={addRow}
@@ -410,24 +415,14 @@ const SalesManagementSheet = () => {
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="bg-gray-100">
-                    <th className="border border-gray-300 px-4 py-2 text-left">
-                      日付
-                    </th>
-                    <th className="border border-gray-300 px-4 py-2 text-left">
-                      担当者名
-                    </th>
-                    <th className="border border-gray-300 px-4 py-2 text-right">
-                      売上
-                    </th>
-                    <th className="border border-gray-300 px-4 py-2 text-right">
-                      人件費
-                    </th>
+                    <th className="border border-gray-300 px-4 py-2 text-left">日付</th>
+                    <th className="border border-gray-300 px-4 py-2 text-left">担当者名</th>
+                    <th className="border border-gray-300 px-4 py-2 text-right">売上</th>
+                    <th className="border border-gray-300 px-4 py-2 text-right">人件費</th>
                     <th className="border border-gray-300 px-4 py-2 text-right bg-yellow-50">
                       粗利 (自動)
                     </th>
-                    <th className="border border-gray-300 px-4 py-2 text-center">
-                      削除
-                    </th>
+                    <th className="border border-gray-300 px-4 py-2 text-center">削除</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -437,18 +432,14 @@ const SalesManagementSheet = () => {
                         <input
                           type="date"
                           value={row.date}
-                          onChange={(e) =>
-                            updateRow(row.id, "date", e.target.value)
-                          }
+                          onChange={(e) => updateRow(row.id, "date", e.target.value)}
                           className="w-full px-2 py-1 border border-gray-300 rounded"
                         />
                       </td>
                       <td className="border border-gray-300 px-2 py-2">
                         <select
                           value={row.staff}
-                          onChange={(e) =>
-                            updateRow(row.id, "staff", e.target.value)
-                          }
+                          onChange={(e) => updateRow(row.id, "staff", e.target.value)}
                           className="w-full px-2 py-1 border border-gray-300 rounded"
                         >
                           <option value="">選択してください</option>
@@ -463,9 +454,7 @@ const SalesManagementSheet = () => {
                         <input
                           type="number"
                           value={row.sales}
-                          onChange={(e) =>
-                            updateRow(row.id, "sales", Number(e.target.value))
-                          }
+                          onChange={(e) => updateRow(row.id, "sales", Number(e.target.value))}
                           className="w-full px-2 py-1 border border-gray-300 rounded text-right"
                         />
                       </td>
@@ -473,18 +462,12 @@ const SalesManagementSheet = () => {
                         <input
                           type="number"
                           value={row.cost}
-                          onChange={(e) =>
-                            updateRow(row.id, "cost", Number(e.target.value))
-                          }
+                          onChange={(e) => updateRow(row.id, "cost", Number(e.target.value))}
                           className="w-full px-2 py-1 border border-gray-300 rounded text-right"
                         />
                       </td>
                       <td className="border border-gray-300 px-4 py-2 text-right font-semibold bg-yellow-50">
-                        ¥
-                        {calculateProfit(
-                          Number(row.sales),
-                          Number(row.cost)
-                        ).toLocaleString()}
+                        ¥{calculateProfit(Number(row.sales), Number(row.cost)).toLocaleString()}
                       </td>
                       <td className="border border-gray-300 px-2 py-2 text-center">
                         <button
@@ -514,9 +497,7 @@ const SalesManagementSheet = () => {
                   <DollarSign size={32} />
                   <h3 className="text-lg font-semibold">月間売上合計</h3>
                 </div>
-                <p className="text-4xl font-bold">
-                  ¥{totalSales.toLocaleString()}
-                </p>
+                <p className="text-4xl font-bold">¥{totalSales.toLocaleString()}</p>
               </div>
 
               <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg shadow-lg p-6 text-white">
@@ -524,9 +505,7 @@ const SalesManagementSheet = () => {
                   <Users size={32} />
                   <h3 className="text-lg font-semibold">月間人件費合計</h3>
                 </div>
-                <p className="text-4xl font-bold">
-                  ¥{totalCost.toLocaleString()}
-                </p>
+                <p className="text-4xl font-bold">¥{totalCost.toLocaleString()}</p>
               </div>
 
               <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-lg shadow-lg p-6 text-white">
@@ -534,15 +513,9 @@ const SalesManagementSheet = () => {
                   <TrendingUp size={32} />
                   <h3 className="text-lg font-semibold">月間粗利合計</h3>
                 </div>
-                <p className="text-4xl font-bold">
-                  ¥{totalProfit.toLocaleString()}
-                </p>
+                <p className="text-4xl font-bold">¥{totalProfit.toLocaleString()}</p>
                 <p className="text-sm mt-2 opacity-90">
-                  利益率:{" "}
-                  {totalSales > 0
-                    ? ((totalProfit / totalSales) * 100).toFixed(1)
-                    : 0}
-                  %
+                  利益率: {totalSales > 0 ? ((totalProfit / totalSales) * 100).toFixed(1) : 0}%
                 </p>
               </div>
             </div>
@@ -551,9 +524,7 @@ const SalesManagementSheet = () => {
               <div className="bg-white rounded-lg shadow-md p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <Users size={24} className="text-purple-600" />
-                  <h3 className="text-xl font-bold text-gray-700">
-                    メンバーランキング
-                  </h3>
+                  <h3 className="text-xl font-bold text-gray-700">メンバーランキング</h3>
                 </div>
                 <table className="w-full">
                   <thead>
@@ -566,20 +537,13 @@ const SalesManagementSheet = () => {
                   </thead>
                   <tbody>
                     {ranking.map((item, index) => (
-                      <tr
-                        key={item.name}
-                        className="border-b border-gray-200 hover:bg-gray-50"
-                      >
-                        <td className="px-2 py-3 font-bold text-gray-600">
-                          {index + 1}
-                        </td>
+                      <tr key={item.name} className="border-b border-gray-200 hover:bg-gray-50">
+                        <td className="px-2 py-3 font-bold text-gray-600">{index + 1}</td>
                         <td className="px-2 py-3">{item.name}</td>
                         <td className="px-2 py-3 text-right font-semibold text-green-600">
                           ¥{item.profit.toLocaleString()}
                         </td>
-                        <td className="px-2 py-3 text-right text-gray-600">
-                          {item.days}日
-                        </td>
+                        <td className="px-2 py-3 text-right text-gray-600">{item.days}日</td>
                       </tr>
                     ))}
                   </tbody>
@@ -587,9 +551,7 @@ const SalesManagementSheet = () => {
               </div>
 
               <div className="lg:col-span-2 bg-white rounded-lg shadow-md p-6 overflow-x-auto">
-                <h3 className="text-xl font-bold text-gray-700 mb-4">
-                  日別×担当者 粗利マトリクス
-                </h3>
+                <h3 className="text-xl font-bold text-gray-700 mb-4">日別×担当者 粗利マトリクス</h3>
                 <table className="w-full border-collapse text-sm">
                   <thead>
                     <tr className="bg-gray-100">
@@ -597,10 +559,7 @@ const SalesManagementSheet = () => {
                         日付
                       </th>
                       {uniqueStaff.map((staff) => (
-                        <th
-                          key={staff}
-                          className="border border-gray-300 px-3 py-2 text-center"
-                        >
+                        <th key={staff} className="border border-gray-300 px-3 py-2 text-center">
                           {staff}
                         </th>
                       ))}
