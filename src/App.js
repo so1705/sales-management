@@ -13,8 +13,13 @@ import {
 
 const DOC_PATH = { col: "teams", id: "team_default" };
 
-// ここだけ追加：月の下限（2025年11月）
-const MIN_MONTH = "2025-11";
+// 今の年月を "YYYY-MM" で返す（ローカル時間）
+const getCurrentMonthKey = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+};
 
 const SalesManagementSheet = () => {
   // ----------------------------
@@ -45,12 +50,8 @@ const SalesManagementSheet = () => {
   // ----------------------------
   const [activeTab, setActiveTab] = useState("data");
 
-  // ここだけ変更：起動時は「今の年月」(ただしMIN_MONTHより前ならMIN_MONTH)
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    return ym < MIN_MONTH ? MIN_MONTH : ym;
-  });
+  // 起動時は「今の年月」を開く
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey());
 
   const [staffList, setStaffList] = useState(loadStaffFallback);
   const [newStaffName, setNewStaffName] = useState("");
@@ -60,6 +61,9 @@ const SalesManagementSheet = () => {
   const [syncStatus, setSyncStatus] = useState("connecting"); // connecting | synced | error
   const isApplyingRemote = useRef(false);
   const saveTimer = useRef(null);
+
+  // ★ 初回のFirestore読み込みが完了するまで保存させないためのフラグ
+  const hasLoadedRemote = useRef(false);
 
   // ----------------------------
   // Firestore: realtime load (onSnapshot)
@@ -80,6 +84,10 @@ const SalesManagementSheet = () => {
               updatedAt: Date.now(),
             });
             isApplyingRemote.current = false;
+
+            // ★ ここで「読み込み完了扱い」にして保存を許可
+            hasLoadedRemote.current = true;
+
             setSyncStatus("synced");
             return;
           } catch (e) {
@@ -99,6 +107,10 @@ const SalesManagementSheet = () => {
           setStaffList(remoteStaff);
           setDataRows(remoteRows);
           isApplyingRemote.current = false;
+
+          // ★ ここで初回読み込み完了
+          hasLoadedRemote.current = true;
+
           setSyncStatus("synced");
         } catch (e) {
           console.error(e);
@@ -119,6 +131,9 @@ const SalesManagementSheet = () => {
   // Firestore: save (debounced)
   // ----------------------------
   const scheduleSave = () => {
+    // ★ 初回の読み込みが終わるまで保存しない（リセット原因の根本対策）
+    if (!hasLoadedRemote.current) return;
+
     if (isApplyingRemote.current) return;
 
     // debounce
@@ -193,39 +208,35 @@ const SalesManagementSheet = () => {
 
   // ----------------------------
   // Month list
+  // 2025-11 未満を全部消す（= 2025-11 から表示）
   // ----------------------------
-  // ここだけ変更：2025-11より前は生成しない
   const generateMonths = () => {
     const months = [];
 
-    for (let year = 2025; year <= 2026; year++) {
-      const startMonth = year === 2025 ? 11 : 1;
-      for (let month = startMonth; month <= 12; month++) {
-        const monthStr = `${year}-${String(month).padStart(2, "0")}`;
-        months.push(monthStr);
-      }
+    const start = new Date(2025, 10, 1); // 2025-11-01（月は0始まりなので10=11月）
+    const end = new Date(2026, 11, 1);   // 2026-12-01（必要なら伸ばせる）
+
+    let cur = new Date(start);
+    while (cur <= end) {
+      const y = cur.getFullYear();
+      const m = String(cur.getMonth() + 1).padStart(2, "0");
+      months.push(`${y}-${m}`);
+      cur.setMonth(cur.getMonth() + 1);
     }
 
-    return months.reverse(); // 新しい月が上
+    return months.reverse();
   };
-
   const availableMonths = useMemo(() => generateMonths(), []);
 
-  // ここだけ追加：起動時に「今月」がリスト外なら、範囲内に丸める
+  // ----------------------------
+  // selectedMonth が「一覧に無い月」なら、最も近い（最新）に合わせる
+  // （例: 今が2027年などになった時でも落ちないよう保険）
+  // ----------------------------
   useEffect(() => {
-    if (!availableMonths.length) return;
-
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
-    const maxMonth = availableMonths[0]; // 生成後 reverse してるので先頭が最大
-    const minMonth = availableMonths[availableMonths.length - 1];
-
-    let target = ym;
-    if (target < minMonth) target = minMonth;
-    if (target > maxMonth) target = maxMonth;
-
-    if (target !== selectedMonth) setSelectedMonth(target);
+    if (!availableMonths.includes(selectedMonth)) {
+      // 今月が一覧に無い場合は、一覧の先頭（= 最新月）を選ぶ
+      setSelectedMonth(availableMonths[0]);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableMonths]);
 
