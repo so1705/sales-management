@@ -253,12 +253,14 @@ const SalesManagementSheet = () => {
   };
 
   const addRow = () => {
-    const newId = Math.max(...dataRows.map((r) => r.id), 0) + 1;
-    setDataRows([
-      ...dataRows,
-      { id: newId, date: selectedMonth + "-01", staff: "", sales: 0, cost: 0 },
-    ]);
-  };
+  const uid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  setDataRows((prev) => [
+    ...prev,
+    { id: uid, date: selectedMonth + "-01", staff: "", sales: 0, cost: 0 },
+  ]);
+};
+
 
   const deleteRow = (id) => {
     setDataRows(dataRows.filter((row) => row.id !== id));
