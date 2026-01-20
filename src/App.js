@@ -13,6 +13,9 @@ import {
 
 const DOC_PATH = { col: "teams", id: "team_default" };
 
+// ここだけ追加：月の下限（2025年11月）
+const MIN_MONTH = "2025-11";
+
 const SalesManagementSheet = () => {
   // ----------------------------
   // Local initial loaders (fallback)
@@ -41,7 +44,14 @@ const SalesManagementSheet = () => {
   // State
   // ----------------------------
   const [activeTab, setActiveTab] = useState("data");
-  const [selectedMonth, setSelectedMonth] = useState("2025-01");
+
+  // ここだけ変更：起動時は「今の年月」(ただしMIN_MONTHより前ならMIN_MONTH)
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return ym < MIN_MONTH ? MIN_MONTH : ym;
+  });
+
   const [staffList, setStaffList] = useState(loadStaffFallback);
   const [newStaffName, setNewStaffName] = useState("");
   const [dataRows, setDataRows] = useState(loadDataFallback);
@@ -184,17 +194,40 @@ const SalesManagementSheet = () => {
   // ----------------------------
   // Month list
   // ----------------------------
+  // ここだけ変更：2025-11より前は生成しない
   const generateMonths = () => {
     const months = [];
-    for (let year = 2024; year <= 2026; year++) {
-      for (let month = 1; month <= 12; month++) {
+
+    for (let year = 2025; year <= 2026; year++) {
+      const startMonth = year === 2025 ? 11 : 1;
+      for (let month = startMonth; month <= 12; month++) {
         const monthStr = `${year}-${String(month).padStart(2, "0")}`;
         months.push(monthStr);
       }
     }
-    return months.reverse();
+
+    return months.reverse(); // 新しい月が上
   };
+
   const availableMonths = useMemo(() => generateMonths(), []);
+
+  // ここだけ追加：起動時に「今月」がリスト外なら、範囲内に丸める
+  useEffect(() => {
+    if (!availableMonths.length) return;
+
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+    const maxMonth = availableMonths[0]; // 生成後 reverse してるので先頭が最大
+    const minMonth = availableMonths[availableMonths.length - 1];
+
+    let target = ym;
+    if (target < minMonth) target = minMonth;
+    if (target > maxMonth) target = maxMonth;
+
+    if (target !== selectedMonth) setSelectedMonth(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableMonths]);
 
   // ----------------------------
   // Filter + SORT by date automatically (important)
