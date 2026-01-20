@@ -12,8 +12,6 @@ import {
 } from "lucide-react";
 
 const DOC_PATH = { col: "teams", id: "team_default" };
-
-// ここだけ追加：月の下限（2025年11月）
 const MIN_MONTH = "2025-11";
 
 const SalesManagementSheet = () => {
@@ -45,7 +43,6 @@ const SalesManagementSheet = () => {
   // ----------------------------
   const [activeTab, setActiveTab] = useState("data");
 
-  // ここだけ変更：起動時は「今の年月」(ただしMIN_MONTHより前ならMIN_MONTH)
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -61,6 +58,12 @@ const SalesManagementSheet = () => {
   const isApplyingRemote = useRef(false);
   const saveTimer = useRef(null);
 
+  // ★重要：Firestoreの初回読み込みが終わるまで保存禁止（初期化事故を防ぐ）
+  const hasHydrated = useRef(false);
+
+  // ★重要：ローカル保存した時刻（古いsnapshotで巻き戻されないようにする）
+  const lastLocalWriteAt = useRef(0);
+
   // ----------------------------
   // Firestore: realtime load (onSnapshot)
   // ----------------------------
@@ -74,12 +77,16 @@ const SalesManagementSheet = () => {
         if (!snap.exists()) {
           try {
             isApplyingRemote.current = true;
+            const now = Date.now();
             await setDoc(ref, {
               staffList: loadStaffFallback(),
               salesData: loadDataFallback(),
-              updatedAt: Date.now(),
+              updatedAt: now,
             });
             isApplyingRemote.current = false;
+
+            // ★初回同期完了扱い
+            hasHydrated.current = true;
             setSyncStatus("synced");
             return;
           } catch (e) {
@@ -91,7 +98,14 @@ const SalesManagementSheet = () => {
         }
 
         try {
-          const d = snap.data();
+          const d = snap.data() || {};
+          const remoteUpdatedAt = Number(d.updatedAt || 0);
+
+          // ★自分が書いた直後に「古いsnapshot」が来ても無視
+          if (remoteUpdatedAt && remoteUpdatedAt < lastLocalWriteAt.current) {
+            return;
+          }
+
           const remoteStaff = Array.isArray(d.staffList) ? d.staffList : loadStaffFallback();
           const remoteRows = Array.isArray(d.salesData) ? d.salesData : loadDataFallback();
 
@@ -99,6 +113,8 @@ const SalesManagementSheet = () => {
           setStaffList(remoteStaff);
           setDataRows(remoteRows);
           isApplyingRemote.current = false;
+
+          hasHydrated.current = true;
           setSyncStatus("synced");
         } catch (e) {
           console.error(e);
@@ -113,32 +129,54 @@ const SalesManagementSheet = () => {
     );
 
     return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ----------------------------
+  // Firestore: write helper
+  // ----------------------------
+  const writeToFirestore = async (nextStaffList, nextDataRows) => {
+    const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
+    const now = Date.now();
+    lastLocalWriteAt.current = now;
+
+    await setDoc(
+      ref,
+      {
+        staffList: nextStaffList,
+        salesData: nextDataRows,
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+  };
 
   // ----------------------------
   // Firestore: save (debounced)
   // ----------------------------
   const scheduleSave = () => {
+    // ★初回読み込み完了まで保存しない（初期化バグ潰し）
+    if (!hasHydrated.current) return;
+
+    // snapshot適用中は保存しない
     if (isApplyingRemote.current) return;
 
-    // debounce
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
-        await setDoc(
-          ref,
-          {
-            staffList,
-            salesData: dataRows,
-            updatedAt: Date.now(),
-          },
-          { merge: true }
-        );
+        await writeToFirestore(staffList, dataRows);
         setSyncStatus("synced");
       } catch (e) {
         console.error(e);
         setSyncStatus("error");
+
+        // ★権限エラーが多いので、ここで分かるように出す
+        const msg = String(e?.message || "");
+        if (msg.includes("insufficient permissions") || msg.includes("permission")) {
+          alert(
+            "Firestoreの書き込み権限が無い可能性があります。\nFirebase Console → Firestore Database → ルール を確認してください。"
+          );
+        }
       }
     }, 500);
   };
@@ -151,17 +189,66 @@ const SalesManagementSheet = () => {
   // ----------------------------
   // Helpers
   // ----------------------------
-  const addStaff = () => {
+  const addStaff = async () => {
     const name = newStaffName.trim();
-    if (name && !staffList.includes(name)) {
-      setStaffList([...staffList, name]);
+    if (!name) return;
+    if (staffList.includes(name)) {
       setNewStaffName("");
+      return;
+    }
+
+    const prev = staffList;
+    const next = [...staffList, name];
+
+    // 先に画面反映（体感速度）
+    setStaffList(next);
+    setNewStaffName("");
+
+    // ★担当者は即保存（失敗したら戻す）
+    try {
+      // hydration前ならまず待つ（=初期化事故回避）
+      if (!hasHydrated.current) return;
+      await writeToFirestore(next, dataRows);
+      setSyncStatus("synced");
+    } catch (e) {
+      console.error(e);
+      setSyncStatus("error");
+      setStaffList(prev);
+
+      const msg = String(e?.message || "");
+      if (msg.includes("insufficient permissions") || msg.includes("permission")) {
+        alert(
+          "担当者を追加できません（Firestoreの書き込み権限が原因の可能性が高いです）。\nFirebase ConsoleのFirestoreルールを確認してください。"
+        );
+      }
     }
   };
 
-  const removeStaff = (staffName) => {
-    if (window.confirm(`${staffName}を削除しますか?`)) {
-      setStaffList(staffList.filter((s) => s !== staffName));
+  const removeStaff = async (staffName) => {
+    if (!window.confirm(`${staffName}を削除しますか?`)) return;
+
+    const prev = staffList;
+    const next = staffList.filter((s) => s !== staffName);
+
+    // 先に画面反映
+    setStaffList(next);
+
+    // ★担当者は即保存（失敗したら戻す）
+    try {
+      if (!hasHydrated.current) return;
+      await writeToFirestore(next, dataRows);
+      setSyncStatus("synced");
+    } catch (e) {
+      console.error(e);
+      setSyncStatus("error");
+      setStaffList(prev);
+
+      const msg = String(e?.message || "");
+      if (msg.includes("insufficient permissions") || msg.includes("permission")) {
+        alert(
+          "担当者を削除できません（Firestoreの書き込み権限が原因の可能性が高いです）。\nFirebase ConsoleのFirestoreルールを確認してください。"
+        );
+      }
     }
   };
 
@@ -169,13 +256,7 @@ const SalesManagementSheet = () => {
     const newId = Math.max(...dataRows.map((r) => r.id), 0) + 1;
     setDataRows([
       ...dataRows,
-      {
-        id: newId,
-        date: selectedMonth + "-01",
-        staff: "",
-        sales: 0,
-        cost: 0,
-      },
+      { id: newId, date: selectedMonth + "-01", staff: "", sales: 0, cost: 0 },
     ]);
   };
 
@@ -192,36 +273,38 @@ const SalesManagementSheet = () => {
   const calculateProfit = (sales, cost) => sales - cost;
 
   // ----------------------------
-  // Month list
+  // Month list (MIN_MONTH以降だけを生成)
   // ----------------------------
-  // ここだけ変更：2025-11より前は生成しない
   const generateMonths = () => {
     const months = [];
 
-    for (let year = 2025; year <= 2026; year++) {
-      const startMonth = year === 2025 ? 11 : 1;
-      for (let month = startMonth; month <= 12; month++) {
-        const monthStr = `${year}-${String(month).padStart(2, "0")}`;
-        months.push(monthStr);
-      }
+    // MIN_MONTHから「今月 + 18ヶ月」まで（2024などは絶対出ない）
+    const [minY, minM] = MIN_MONTH.split("-").map(Number);
+    const start = new Date(minY, minM - 1, 1);
+
+    const now = new Date();
+    const end = new Date(now.getFullYear(), now.getMonth() + 18, 1);
+
+    const cur = new Date(start);
+    while (cur <= end) {
+      const y = cur.getFullYear();
+      const m = String(cur.getMonth() + 1).padStart(2, "0");
+      months.push(`${y}-${m}`);
+      cur.setMonth(cur.getMonth() + 1);
     }
 
-    return months.reverse(); // 新しい月が上
+    return months.reverse();
   };
 
   const availableMonths = useMemo(() => generateMonths(), []);
 
-  // ここだけ追加：起動時に「今月」がリスト外なら、範囲内に丸める
+  // selectedMonthが範囲外なら丸める
   useEffect(() => {
     if (!availableMonths.length) return;
-
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
-    const maxMonth = availableMonths[0]; // 生成後 reverse してるので先頭が最大
+    const maxMonth = availableMonths[0];
     const minMonth = availableMonths[availableMonths.length - 1];
 
-    let target = ym;
+    let target = selectedMonth;
     if (target < minMonth) target = minMonth;
     if (target > maxMonth) target = maxMonth;
 
@@ -230,11 +313,10 @@ const SalesManagementSheet = () => {
   }, [availableMonths]);
 
   // ----------------------------
-  // Filter + SORT by date automatically (important)
+  // Filter + SORT
   // ----------------------------
   const monthlyData = useMemo(() => {
     const filtered = dataRows.filter((row) => String(row.date || "").startsWith(selectedMonth));
-    // 日付昇順 → 同じ日付なら staff → さらに id
     filtered.sort((a, b) => {
       const da = String(a.date || "");
       const db_ = String(b.date || "");
@@ -247,18 +329,14 @@ const SalesManagementSheet = () => {
     return filtered;
   }, [dataRows, selectedMonth]);
 
-  // Monthly totals
   const totalSales = monthlyData.reduce((sum, row) => sum + Number(row.sales), 0);
   const totalCost = monthlyData.reduce((sum, row) => sum + Number(row.cost), 0);
   const totalProfit = totalSales - totalCost;
 
-  // Ranking by staff
   const staffStats = {};
   monthlyData.forEach((row) => {
     if (!row.staff) return;
-    if (!staffStats[row.staff]) {
-      staffStats[row.staff] = { profit: 0, days: 0 };
-    }
+    if (!staffStats[row.staff]) staffStats[row.staff] = { profit: 0, days: 0 };
     staffStats[row.staff].profit += calculateProfit(Number(row.sales), Number(row.cost));
     staffStats[row.staff].days += 1;
   });
@@ -267,7 +345,6 @@ const SalesManagementSheet = () => {
     .map(([name, stats]) => ({ name, ...stats }))
     .sort((a, b) => b.profit - a.profit);
 
-  // Daily matrix
   const uniqueDates = [...new Set(monthlyData.map((row) => row.date))].sort();
   const uniqueStaff = [...new Set(monthlyData.map((row) => row.staff))].filter(Boolean);
 
@@ -277,15 +354,13 @@ const SalesManagementSheet = () => {
   };
 
   // ----------------------------
-  // UI
+  // UI（ここから下はあなたのベース維持）
   // ----------------------------
   return (
     <div className="min-h-screen bg-gray-50 p-4">
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-2">
-          <h1 className="text-3xl font-bold text-gray-800">
-            営業チーム売上管理システム
-          </h1>
+          <h1 className="text-3xl font-bold text-gray-800">営業チーム売上管理システム</h1>
 
           <div className="flex items-center gap-3">
             <span
@@ -298,11 +373,7 @@ const SalesManagementSheet = () => {
               }`}
               title="Firestore同期状態"
             >
-              {syncStatus === "synced"
-                ? "同期OK"
-                : syncStatus === "connecting"
-                ? "同期中…"
-                : "同期エラー"}
+              {syncStatus === "synced" ? "同期OK" : syncStatus === "connecting" ? "同期中…" : "同期エラー"}
             </span>
 
             <Calendar className="text-gray-600" size={20} />
@@ -324,9 +395,7 @@ const SalesManagementSheet = () => {
           <button
             onClick={() => setActiveTab("data")}
             className={`px-6 py-3 font-semibold transition-colors ${
-              activeTab === "data"
-                ? "text-blue-600 border-b-2 border-blue-600"
-                : "text-gray-600 hover:text-gray-800"
+              activeTab === "data" ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-600 hover:text-gray-800"
             }`}
           >
             📊 data (入力用)
@@ -419,9 +488,7 @@ const SalesManagementSheet = () => {
                     <th className="border border-gray-300 px-4 py-2 text-left">担当者名</th>
                     <th className="border border-gray-300 px-4 py-2 text-right">売上</th>
                     <th className="border border-gray-300 px-4 py-2 text-right">人件費</th>
-                    <th className="border border-gray-300 px-4 py-2 text-right bg-yellow-50">
-                      粗利 (自動)
-                    </th>
+                    <th className="border border-gray-300 px-4 py-2 text-right bg-yellow-50">粗利 (自動)</th>
                     <th className="border border-gray-300 px-4 py-2 text-center">削除</th>
                   </tr>
                 </thead>
@@ -555,9 +622,7 @@ const SalesManagementSheet = () => {
                 <table className="w-full border-collapse text-sm">
                   <thead>
                     <tr className="bg-gray-100">
-                      <th className="border border-gray-300 px-3 py-2 sticky left-0 bg-gray-100">
-                        日付
-                      </th>
+                      <th className="border border-gray-300 px-3 py-2 sticky left-0 bg-gray-100">日付</th>
                       {uniqueStaff.map((staff) => (
                         <th key={staff} className="border border-gray-300 px-3 py-2 text-center">
                           {staff}
@@ -579,9 +644,7 @@ const SalesManagementSheet = () => {
                               className="border border-gray-300 px-3 py-2 text-right"
                             >
                               {profit !== null ? (
-                                <span className="text-green-600 font-semibold">
-                                  ¥{profit.toLocaleString()}
-                                </span>
+                                <span className="text-green-600 font-semibold">¥{profit.toLocaleString()}</span>
                               ) : (
                                 <span className="text-gray-300">-</span>
                               )}
