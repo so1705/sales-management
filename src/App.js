@@ -64,9 +64,17 @@ const SalesManagementSheet = () => {
   // ----------------------------
   useEffect(() => {
     const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
+    
+    // { includeMetadataChanges: true } を追加して、自分の書き込み状態を検知できるようにします
     const unsub = onSnapshot(
       ref,
+      { includeMetadataChanges: true },
       async (snap) => {
+        // ★ 自分が今書き込んでいる最中の「未確定データ」なら、ステートの更新を無視する
+        if (snap.metadata.hasPendingWrites) {
+          return;
+        }
+
         if (!snap.exists()) {
           try {
             isApplyingRemote.current = true;
