@@ -64,15 +64,17 @@ const SalesManagementSheet = () => {
   // ----------------------------
   useEffect(() => {
     const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
-    
-    // { includeMetadataChanges: true } を追加して、自分の書き込み状態を検知できるようにします
     const unsub = onSnapshot(
       ref,
-      { includeMetadataChanges: true },
+      { includeMetadataChanges: true }, // メタデータ変更を監視
       async (snap) => {
-        // ★ 自分が今書き込んでいる最中の「未確定データ」なら、ステートの更新を無視する
-        if (snap.metadata.hasPendingWrites) {
-          return;
+        // 【重要】自分が書き込み中の「未確定データ」なら更新しない
+        if (snap.metadata.hasPendingWrites) return;
+
+        // 【最強のガード】今、入力欄(INPUTやTEXTAREA)を触っている最中なら、外部更新をブロックする
+        const activeEl = document.activeElement;
+        if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
+          return; 
         }
 
         if (!snap.exists()) {
@@ -392,6 +394,7 @@ const SalesManagementSheet = () => {
           </div>
         )}
 
+        {/* ... (ダッシュボード部分は変更なし) ... */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
