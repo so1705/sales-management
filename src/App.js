@@ -12,183 +12,52 @@ import {
   Users,
   TrendingUp,
   FileText,
+  Download,
 } from "lucide-react";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 
 const DOC_PATH = { col: "teams", id: "team_default" };
 const MIN_MONTH = "2025-11";
+const COMPANY_NAME = "森平心"; // 発行者名を変更
 
 const SalesManagementSheet = () => {
-  // ----------------------------
-  // Local initial loaders (fallback)
-  // ----------------------------
-  const loadDataFallback = () => [
-    { id: 1, date: "2026-02-01", staff: "後藤陽喜", sales: 16000, cost: 13000, memo: "" },
-    { id: 2, date: "2026-02-01", staff: "坂田優希", sales: 16000, cost: 13000, memo: "" },
-  ];
-
-  const loadStaffFallback = () => [
-    "後藤陽喜",
-    "坂田優希",
-    "林侑吾",
-    "斉藤洋斗",
-    "松田弘之",
-    "東桂木光希",
-  ];
-
   // ----------------------------
   // State
   // ----------------------------
   const [activeTab, setActiveTab] = useState("data");
-
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     return ym < MIN_MONTH ? MIN_MONTH : ym;
   });
 
+  const loadDataFallback = () => [
+    { id: 1, date: "2026-02-01", staff: "後藤陽喜", sales: 16000, cost: 13000, memo: "" },
+    { id: 2, date: "2026-02-01", staff: "坂田優希", sales: 16000, cost: 13000, memo: "" },
+  ];
+
+  const loadStaffFallback = () => [
+    "後藤陽喜", "坂田優希", "林侑吾", "斉藤洋斗", "松田弘之", "東桂木光希",
+  ];
+
   const [staffList, setStaffList] = useState(loadStaffFallback);
   const [newStaffName, setNewStaffName] = useState("");
   const [dataRows, setDataRows] = useState(loadDataFallback);
-
   const [syncStatus, setSyncStatus] = useState("connecting");
+
   const isApplyingRemote = useRef(false);
   const saveTimer = useRef(null);
   const hasHydrated = useRef(false);
   const lastLocalWriteAt = useRef(0);
+  const pdfTemplateRef = useRef(null);
+
+  // PDF出力用のデータ保持
+  const [pdfData, setPdfData] = useState({ name: "", items: [], total: 0 });
 
   // ----------------------------
-  // Firestore: realtime load
+  // Helper functions (エラー解消用の月生成ロジック)
   // ----------------------------
-  useEffect(() => {
-    const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
-    const unsub = onSnapshot(
-      ref,
-      { includeMetadataChanges: true },
-      async (snap) => {
-        if (snap.metadata.hasPendingWrites) return;
-
-        const activeEl = document.activeElement;
-        if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
-          return; 
-        }
-
-        if (!snap.exists()) {
-          try {
-            isApplyingRemote.current = true;
-            const now = Date.now();
-            await setDoc(ref, {
-              staffList: loadStaffFallback(),
-              salesData: loadDataFallback(),
-              updatedAt: now,
-            });
-            isApplyingRemote.current = false;
-            hasHydrated.current = true;
-            setSyncStatus("synced");
-            return;
-          } catch (e) {
-            console.error(e);
-            setSyncStatus("error");
-            isApplyingRemote.current = false;
-            return;
-          }
-        }
-
-        try {
-          const d = snap.data() || {};
-          const remoteUpdatedAt = Number(d.updatedAt || 0);
-          if (remoteUpdatedAt && remoteUpdatedAt < lastLocalWriteAt.current) {
-            return;
-          }
-          const remoteStaff = Array.isArray(d.staffList) ? d.staffList : loadStaffFallback();
-          const remoteRows = Array.isArray(d.salesData) ? d.salesData : loadDataFallback();
-
-          isApplyingRemote.current = true;
-          setStaffList(remoteStaff);
-          setDataRows(remoteRows);
-          isApplyingRemote.current = false;
-          hasHydrated.current = true;
-          setSyncStatus("synced");
-        } catch (e) {
-          console.error(e);
-          setSyncStatus("error");
-          isApplyingRemote.current = false;
-        }
-      },
-      (err) => {
-        console.error(err);
-        setSyncStatus("error");
-      }
-    );
-    return () => unsub();
-  }, []);
-
-  const writeToFirestore = async (nextStaffList, nextDataRows) => {
-    const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
-    const now = Date.now();
-    lastLocalWriteAt.current = now;
-    await setDoc(
-      ref,
-      {
-        staffList: nextStaffList,
-        salesData: nextDataRows,
-        updatedAt: now,
-      },
-      { merge: true }
-    );
-  };
-
-  const scheduleSave = () => {
-    if (!hasHydrated.current) return;
-    if (isApplyingRemote.current) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await writeToFirestore(staffList, dataRows);
-        setSyncStatus("synced");
-      } catch (e) {
-        console.error(e);
-        setSyncStatus("error");
-      }
-    }, 500);
-  };
-
-  useEffect(() => {
-    scheduleSave();
-  }, [staffList, dataRows]);
-
-  const addStaff = async () => {
-    const name = newStaffName.trim();
-    if (!name || staffList.includes(name)) { setNewStaffName(""); return; }
-    const next = [...staffList, name];
-    setStaffList(next);
-    setNewStaffName("");
-  };
-
-  const removeStaff = async (staffName) => {
-    if (!window.confirm(`${staffName}を削除しますか?`)) return;
-    setStaffList(staffList.filter((s) => s !== staffName));
-  };
-
-  const addRow = () => {
-    const uid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setDataRows((prev) => [
-      ...prev,
-      { id: uid, date: selectedMonth + "-01", staff: "", sales: 0, cost: 0, memo: "" },
-    ]);
-  };
-
-  const deleteRow = (id) => {
-    setDataRows(dataRows.filter((row) => row.id !== id));
-  };
-
-  const updateRow = (id, field, value) => {
-    setDataRows(
-      dataRows.map((row) => (row.id === id ? { ...row, [field]: value } : row))
-    );
-  };
-
-  const calculateProfit = (sales, cost) => sales - cost;
-
   const generateMonths = () => {
     const months = [];
     const [minY, minM] = MIN_MONTH.split("-").map(Number);
@@ -207,21 +76,111 @@ const SalesManagementSheet = () => {
 
   const availableMonths = useMemo(() => generateMonths(), []);
 
+  // ----------------------------
+  // PDF出力ロジック
+  // ----------------------------
+  const exportPDF = async (staffName) => {
+    const element = pdfTemplateRef.current;
+    if (!element) return;
+
+    element.style.display = "block";
+
+    try {
+      const canvas = await html2canvas(element, {
+        scale: 3,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+      });
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+
+      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, Math.min(pdfHeight, 297));
+      pdf.save(`${selectedMonth}_支払明細書_${staffName}.pdf`);
+    } catch (error) {
+      console.error("PDF Export Error:", error);
+    } finally {
+      element.style.display = "none";
+    }
+  };
+
+  // ----------------------------
+  // Firestore連携 (既存)
+  // ----------------------------
+  useEffect(() => {
+    const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
+    const unsub = onSnapshot(ref, { includeMetadataChanges: true }, async (snap) => {
+        if (snap.metadata.hasPendingWrites) return;
+        const activeEl = document.activeElement;
+        if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) return;
+        if (!snap.exists()) {
+          try {
+            isApplyingRemote.current = true;
+            await setDoc(ref, { staffList: loadStaffFallback(), salesData: loadDataFallback(), updatedAt: Date.now() });
+            isApplyingRemote.current = false;
+            hasHydrated.current = true;
+            setSyncStatus("synced");
+          } catch (e) { setSyncStatus("error"); }
+          return;
+        }
+        const d = snap.data() || {};
+        const remoteUpdatedAt = Number(d.updatedAt || 0);
+        if (remoteUpdatedAt && remoteUpdatedAt < lastLocalWriteAt.current) return;
+        setStaffList(Array.isArray(d.staffList) ? d.staffList : loadStaffFallback());
+        setDataRows(Array.isArray(d.salesData) ? d.salesData : loadDataFallback());
+        hasHydrated.current = true;
+        setSyncStatus("synced");
+      }, (err) => setSyncStatus("error")
+    );
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydrated.current || isApplyingRemote.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
+        const now = Date.now();
+        lastLocalWriteAt.current = now;
+        await setDoc(ref, { staffList, salesData: dataRows, updatedAt: now }, { merge: true });
+        setSyncStatus("synced");
+      } catch (e) { setSyncStatus("error"); }
+    }, 500);
+  }, [staffList, dataRows]);
+
+  // ----------------------------
+  // 計算ロジック
+  // ----------------------------
+  const addStaff = () => {
+    const name = newStaffName.trim();
+    if (!name || staffList.includes(name)) { setNewStaffName(""); return; }
+    setStaffList([...staffList, name]);
+    setNewStaffName("");
+  };
+
+  const removeStaff = (name) => {
+    if (window.confirm(`${name}を削除しますか?`)) setStaffList(staffList.filter(s => s !== name));
+  };
+
+  const addRow = () => {
+    const uid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setDataRows([...dataRows, { id: uid, date: selectedMonth + "-01", staff: "", sales: 0, cost: 0, memo: "" }]);
+  };
+
+  const updateRow = (id, field, value) => {
+    setDataRows(dataRows.map(row => row.id === id ? { ...row, [field]: value } : row));
+  };
+
+  const deleteRow = (id) => setDataRows(dataRows.filter(row => row.id !== id));
+
   const monthlyData = useMemo(() => {
-    const filtered = dataRows.filter((row) => String(row.date || "").startsWith(selectedMonth));
-    filtered.sort((a, b) => {
-      const da = String(a.date || "");
-      const db_ = String(b.date || "");
-      if (da !== db_) return da.localeCompare(db_);
-      const sa = String(a.staff || "");
-      const sb = String(b.staff || "");
-      if (sa !== sb) return sa.localeCompare(sb);
-      return Number(a.id) - Number(b.id);
-    });
-    return filtered;
+    return dataRows
+      .filter(row => String(row.date || "").startsWith(selectedMonth))
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
   }, [dataRows, selectedMonth]);
 
-  // --- 明細集計ロジック ---
   const memberPaystubs = useMemo(() => {
     const stubs = {};
     monthlyData.forEach(row => {
@@ -233,32 +192,90 @@ const SalesManagementSheet = () => {
     return stubs;
   }, [monthlyData]);
 
-  const totalSales = monthlyData.reduce((sum, row) => sum + Number(row.sales), 0);
-  const totalCost = monthlyData.reduce((sum, row) => sum + Number(row.cost), 0);
+  const totalSales = monthlyData.reduce((sum, r) => sum + Number(r.sales), 0);
+  const totalCost = monthlyData.reduce((sum, r) => sum + Number(r.cost), 0);
   const totalProfit = totalSales - totalCost;
 
   const staffStats = {};
-  monthlyData.forEach((row) => {
+  monthlyData.forEach(row => {
     if (!row.staff) return;
     if (!staffStats[row.staff]) staffStats[row.staff] = { profit: 0, days: 0 };
-    staffStats[row.staff].profit += calculateProfit(Number(row.sales), Number(row.cost));
+    staffStats[row.staff].profit += (Number(row.sales) - Number(row.cost));
     staffStats[row.staff].days += 1;
   });
 
-  const ranking = Object.entries(staffStats)
-    .map(([name, stats]) => ({ name, ...stats }))
-    .sort((a, b) => b.profit - a.profit);
+  const ranking = Object.entries(staffStats).map(([name, s]) => ({ name, ...s })).sort((a, b) => b.profit - a.profit);
+  const uniqueDates = [...new Set(monthlyData.map(r => r.date))].sort();
+  const uniqueStaff = [...new Set(monthlyData.map(r => r.staff))].filter(Boolean);
 
-  const uniqueDates = [...new Set(monthlyData.map((row) => row.date))].sort();
-  const uniqueStaff = [...new Set(monthlyData.map((row) => row.staff))].filter(Boolean);
-
-  const getProfit = (date, staff) => {
-    const row = monthlyData.find((r) => r.date === date && r.staff === staff);
-    return row ? calculateProfit(Number(row.sales), Number(row.cost)) : null;
-  };
-
+  // ----------------------------
+  // UI Render
+  // ----------------------------
   return (
     <div className="min-h-screen bg-gray-50 p-4">
+      {/* --- PDF出力用隠しコンポーネント --- */}
+      <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
+        <div 
+          ref={pdfTemplateRef} 
+          className="bg-white p-16 text-gray-800" 
+          style={{ width: "210mm", minHeight: "297mm", fontFamily: "sans-serif" }}
+        >
+          <div className="flex justify-between items-start mb-16">
+            <div>
+              <h1 className="text-4xl font-bold tracking-[0.2em] text-gray-900 mb-10">支払明細書</h1>
+              <div className="text-xl border-b-2 border-gray-800 pb-1 w-80">
+                <span className="font-bold">{pdfData.name}</span> 様
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-sm mb-1">発行日: {new Date().toLocaleDateString('ja-JP')}</p>
+              <p className="font-bold text-xl">{COMPANY_NAME}</p>
+            </div>
+          </div>
+
+          <div className="mb-10">
+            <p className="text-sm mb-3">下記の通り、お支払い内容をご通知申し上げます。</p>
+            <div className="bg-gray-50 p-6 flex justify-between items-center border-y-2 border-gray-800">
+              <span className="text-lg font-bold">お支払い合計金額</span>
+              <span className="text-3xl font-black">¥{pdfData.total.toLocaleString()}-</span>
+            </div>
+          </div>
+
+          {/* 備考列を削除し、金額を「給料」に変更 */}
+          <table className="w-full border-collapse border border-gray-400 mb-10">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="border border-gray-400 p-3 text-sm">日付</th>
+                <th className="border border-gray-400 p-3 text-sm text-right">給料</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pdfData.items.map((item, idx) => (
+                <tr key={idx} className="border border-gray-400">
+                  <td className="border border-gray-400 p-3 text-center text-sm">{item.date.replace(/-/g, "/")}</td>
+                  <td className="border border-gray-400 p-3 text-right text-sm font-medium">¥{item.amount.toLocaleString()}</td>
+                </tr>
+              ))}
+              {[...Array(Math.max(0, 10 - pdfData.items.length))].map((_, i) => (
+                <tr key={`empty-${i}`} className="border border-gray-400 h-11">
+                  <td className="border border-gray-400"></td>
+                  <td className="border border-gray-400"></td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-gray-50 font-bold">
+                <td className="border border-gray-400 p-3 text-right">合計金額</td>
+                <td className="border border-gray-400 p-3 text-right text-lg">¥{pdfData.total.toLocaleString()}</td>
+              </tr>
+            </tfoot>
+          </table>
+          <div className="text-xs text-gray-400 mt-20 border-t pt-4">
+            ※本明細書の内容についてご不明な点がございましたら、森平までご連絡ください。
+          </div>
+        </div>
+      </div>
+
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-2">
           <h1 className="text-3xl font-bold text-gray-800">営業チーム売上管理</h1>
@@ -266,7 +283,6 @@ const SalesManagementSheet = () => {
             <span className={`text-xs px-2 py-1 rounded-full border ${syncStatus === "synced" ? "bg-green-50 text-green-700 border-green-200" : "bg-yellow-50 text-yellow-700 border-yellow-200"}`}>
               {syncStatus === "synced" ? "同期OK" : "同期中…"}
             </span>
-            <Calendar className="text-gray-600" size={20} />
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
@@ -293,11 +309,23 @@ const SalesManagementSheet = () => {
             ) : (
               Object.entries(memberPaystubs).map(([name, stub]) => (
                 <div key={name} className="bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden flex flex-col">
-                  <div className="bg-blue-600 p-4 text-white">
-                    <h3 className="text-xl font-bold">{name} 様</h3>
-                    <p className="text-sm opacity-90">{selectedMonth.replace("-", "/")} 支払内訳明細</p>
+                  <div className="bg-blue-600 p-4 text-white flex justify-between items-start">
+                    <div>
+                      <h3 className="text-xl font-bold">{name} 様</h3>
+                      <p className="text-sm opacity-90">{selectedMonth.replace("-", "/")} 支払内訳</p>
+                    </div>
+                    <button 
+                      onClick={async () => {
+                        await setPdfData({ name, items: stub.items, total: stub.total });
+                        setTimeout(() => exportPDF(name), 100);
+                      }}
+                      className="p-2 bg-white/20 hover:bg-white/40 rounded-full transition-all"
+                      title="明細書をPDF出力"
+                    >
+                      <Download size={20} />
+                    </button>
                   </div>
-                  <div className="p-4 flex-1 space-y-2 max-h-64 overflow-y-auto">
+                  <div className="p-4 flex-1 space-y-2 max-h-64 overflow-y-auto bg-white">
                     {stub.items.map((item, i) => (
                       <div key={i} className="flex justify-between border-b border-gray-50 py-2 text-sm">
                         <span className="text-gray-600 font-medium">{item.date.slice(5).replace("-", "/")}</span>
@@ -317,10 +345,11 @@ const SalesManagementSheet = () => {
           </div>
         )}
 
+        {/* --- その他のタブ (変更なし) --- */}
         {activeTab === "data" && (
-          <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="bg-white rounded-lg shadow-md p-6 text-gray-700">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-bold text-gray-700">{selectedMonth.replace("-", "/")}月分入力</h2>
+              <h2 className="text-xl font-bold">{selectedMonth.replace("-", "/")}月分入力</h2>
               <button onClick={addRow} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"><Plus size={20} />追加</button>
             </div>
             <div className="overflow-x-auto min-h-[400px]">
@@ -383,36 +412,36 @@ const SalesManagementSheet = () => {
                 <p className="text-sm mt-2 opacity-90">利益率: {totalSales > 0 ? ((totalProfit / totalSales) * 100).toFixed(1) : 0}%</p>
               </div>
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="bg-white rounded-lg shadow-md p-6">
-                <div className="flex items-center gap-2 mb-4"><Users size={24} className="text-purple-600" /><h3 className="text-xl font-bold text-gray-700">メンバーランキング</h3></div>
-                <table className="w-full text-sm">
-                  <thead><tr className="bg-gray-100"><th className="px-2 py-2 text-left">順位</th><th className="px-2 py-2 text-left">担当者</th><th className="px-2 py-2 text-right">粗利</th><th className="px-2 py-2 text-right">日数</th></tr></thead>
-                  <tbody>{ranking.map((item, index) => (<tr key={item.name} className="border-b hover:bg-gray-50"><td className="px-2 py-3 font-bold text-gray-600">{index + 1}</td><td className="px-2 py-3">{item.name}</td><td className="px-2 py-3 text-right font-bold text-green-600">¥{item.profit.toLocaleString()}</td><td className="px-2 py-3 text-right text-gray-600">{item.days}日</td></tr>))}</tbody>
-                </table>
-              </div>
-              <div className="lg:col-span-2 bg-white rounded-lg shadow-md p-6 overflow-x-auto">
-                <h3 className="text-xl font-bold text-gray-700 mb-4">日別×担当者 粗利マトリクス</h3>
-                <table className="w-full border-collapse text-sm">
-                  <thead><tr className="bg-gray-100"><th className="border border-gray-300 px-3 py-2 sticky left-0 bg-gray-100">日付</th>{uniqueStaff.map((staff) => (<th key={staff} className="border border-gray-300 px-3 py-2 text-center">{staff}</th>))}</tr></thead>
-                  <tbody>{uniqueDates.map((date) => (<tr key={date} className="hover:bg-gray-50"><td className="border border-gray-300 px-3 py-2 font-semibold sticky left-0 bg-white">{date.slice(5).replace("-", "/")}</td>{uniqueStaff.map((staff) => {const profit = getProfit(date, staff);return (<td key={`${date}-${staff}`} className="border border-gray-300 px-3 py-2 text-right">{profit !== null ? (<span className="text-green-600 font-bold">¥{profit.toLocaleString()}</span>) : (<span className="text-gray-300">-</span>)}</td>);})}</tr>))}</tbody>
-                </table>
-              </div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-gray-700">
+               <div className="bg-white rounded-lg shadow-md p-6">
+                 <div className="flex items-center gap-2 mb-4"><Users size={24} className="text-purple-600" /><h3 className="text-xl font-bold">メンバーランキング</h3></div>
+                 <table className="w-full text-sm">
+                   <thead><tr className="bg-gray-100"><th className="px-2 py-2 text-left">順位</th><th className="px-2 py-2 text-left">担当者</th><th className="px-2 py-2 text-right">粗利</th><th className="px-2 py-2 text-right">日数</th></tr></thead>
+                   <tbody>{ranking.map((item, index) => (<tr key={item.name} className="border-b hover:bg-gray-50"><td className="px-2 py-3 font-bold">{index + 1}</td><td className="px-2 py-3">{item.name}</td><td className="px-2 py-3 text-right font-bold text-green-600">¥{item.profit.toLocaleString()}</td><td className="px-2 py-3 text-right">{item.days}日</td></tr>))}</tbody>
+                 </table>
+               </div>
+               <div className="lg:col-span-2 bg-white rounded-lg shadow-md p-6 overflow-x-auto">
+                 <h3 className="text-xl font-bold mb-4">日別×担当者 粗利マトリクス</h3>
+                 <table className="w-full border-collapse text-sm">
+                   <thead><tr className="bg-gray-100"><th className="border border-gray-300 px-3 py-2 sticky left-0 bg-gray-100">日付</th>{uniqueStaff.map((s) => (<th key={s} className="border border-gray-300 px-3 py-2 text-center">{s}</th>))}</tr></thead>
+                   <tbody>{uniqueDates.map((date) => (<tr key={date} className="hover:bg-gray-50"><td className="border border-gray-300 px-3 py-2 font-semibold sticky left-0 bg-white">{date.slice(5).replace("-", "/")}</td>{uniqueStaff.map((staff) => {const row = monthlyData.find(r => r.date === date && r.staff === staff);return (<td key={`${date}-${staff}`} className="border border-gray-300 px-3 py-2 text-right">{row ? (<span className="text-green-600 font-bold">¥{(row.sales-row.cost).toLocaleString()}</span>) : (<span className="text-gray-300">-</span>)}</td>);})}</tr>))}</tbody>
+                 </table>
+               </div>
             </div>
           </div>
         )}
 
         {activeTab === "settings" && (
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-bold text-gray-700 mb-4">担当者リスト管理</h2>
+          <div className="bg-white rounded-lg shadow-md p-6 text-gray-700">
+            <h2 className="text-xl font-bold mb-4">担当者リスト管理</h2>
             <div className="flex gap-2 mb-4">
               <input type="text" value={newStaffName} onChange={(e) => setNewStaffName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addStaff()} placeholder="名前を入力" className="flex-1 px-4 py-2 border rounded-lg" />
-              <button onClick={addStaff} className="bg-green-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-green-700 transition-colors">追加</button>
+              <button onClick={addStaff} className="bg-green-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-green-700">追加</button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {staffList.map((staff) => (
                 <div key={staff} className="flex items-center justify-between bg-gray-50 px-4 py-3 rounded-lg border">
-                  <span className="font-medium text-gray-700">{staff}</span>
+                  <span className="font-medium">{staff}</span>
                   <button onClick={() => removeStaff(staff)} className="text-red-400 hover:text-red-600"><Trash2 size={18} /></button>
                 </div>
               ))}
