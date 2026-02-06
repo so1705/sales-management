@@ -19,7 +19,7 @@ import { jsPDF } from "jspdf";
 
 const DOC_PATH = { col: "teams", id: "team_default" };
 const MIN_MONTH = "2025-11";
-const COMPANY_NAME = "森平心"; // 発行者名を変更
+const COMPANY_NAME = "森平心"; // 発行者名
 
 const SalesManagementSheet = () => {
   // ----------------------------
@@ -49,14 +49,14 @@ const SalesManagementSheet = () => {
   const isApplyingRemote = useRef(false);
   const saveTimer = useRef(null);
   const hasHydrated = useRef(false);
-  const lastLocalWriteAt = useRef(0);
+  const lastLocalWriteAt = useRef(0); // 同期バグ防止用のタイムスタンプ
   const pdfTemplateRef = useRef(null);
 
   // PDF出力用のデータ保持
   const [pdfData, setPdfData] = useState({ name: "", items: [], total: 0 });
 
   // ----------------------------
-  // Helper functions (エラー解消用の月生成ロジック)
+  // Helper functions
   // ----------------------------
   const generateMonths = () => {
     const months = [];
@@ -106,7 +106,7 @@ const SalesManagementSheet = () => {
   };
 
   // ----------------------------
-  // Firestore連携 (既存)
+  // Firestore連携 & 同期バグ対策
   // ----------------------------
   useEffect(() => {
     const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
@@ -114,6 +114,7 @@ const SalesManagementSheet = () => {
         if (snap.metadata.hasPendingWrites) return;
         const activeEl = document.activeElement;
         if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) return;
+        
         if (!snap.exists()) {
           try {
             isApplyingRemote.current = true;
@@ -124,11 +125,17 @@ const SalesManagementSheet = () => {
           } catch (e) { setSyncStatus("error"); }
           return;
         }
+
         const d = snap.data() || {};
         const remoteUpdatedAt = Number(d.updatedAt || 0);
+
+        // 重要: 自分の最新の書き込みより古いデータが届いたら無視する
         if (remoteUpdatedAt && remoteUpdatedAt < lastLocalWriteAt.current) return;
+
+        isApplyingRemote.current = true;
         setStaffList(Array.isArray(d.staffList) ? d.staffList : loadStaffFallback());
         setDataRows(Array.isArray(d.salesData) ? d.salesData : loadDataFallback());
+        isApplyingRemote.current = false;
         hasHydrated.current = true;
         setSyncStatus("synced");
       }, (err) => setSyncStatus("error")
@@ -136,32 +143,50 @@ const SalesManagementSheet = () => {
     return () => unsub();
   }, []);
 
+  // 自動保存ロジック
   useEffect(() => {
     if (!hasHydrated.current || isApplyingRemote.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    
     saveTimer.current = setTimeout(async () => {
       try {
         const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
         const now = Date.now();
+        // 保存直前にタイムスタンプを更新
         lastLocalWriteAt.current = now;
-        await setDoc(ref, { staffList, salesData: dataRows, updatedAt: now }, { merge: true });
+
+        await setDoc(ref, { 
+          staffList, 
+          salesData: dataRows, 
+          updatedAt: now 
+        }, { merge: true });
+
         setSyncStatus("synced");
-      } catch (e) { setSyncStatus("error"); }
+      } catch (e) { 
+        console.error(e);
+        setSyncStatus("error"); 
+      }
     }, 500);
   }, [staffList, dataRows]);
 
   // ----------------------------
-  // 計算ロジック
+  // 各種操作ロジック
   // ----------------------------
   const addStaff = () => {
     const name = newStaffName.trim();
     if (!name || staffList.includes(name)) { setNewStaffName(""); return; }
-    setStaffList([...staffList, name]);
+    
+    // 追加した瞬間にタイムスタンプを更新して同期上書きをブロック
+    lastLocalWriteAt.current = Date.now();
+    setStaffList((prev) => [...prev, name]);
     setNewStaffName("");
   };
 
   const removeStaff = (name) => {
-    if (window.confirm(`${name}を削除しますか?`)) setStaffList(staffList.filter(s => s !== name));
+    if (window.confirm(`${name}を削除しますか?`)) {
+      lastLocalWriteAt.current = Date.now();
+      setStaffList(staffList.filter(s => s !== name));
+    }
   };
 
   const addRow = () => {
@@ -175,6 +200,9 @@ const SalesManagementSheet = () => {
 
   const deleteRow = (id) => setDataRows(dataRows.filter(row => row.id !== id));
 
+  // ----------------------------
+  // 集計用ロジック
+  // ----------------------------
   const monthlyData = useMemo(() => {
     return dataRows
       .filter(row => String(row.date || "").startsWith(selectedMonth))
@@ -241,10 +269,10 @@ const SalesManagementSheet = () => {
             </div>
           </div>
 
-          {/* 備考列を削除し、金額を「給料」に変更 */}
+          {/* 金額項目を「給料」に変更し、備考を削除 */}
           <table className="w-full border-collapse border border-gray-400 mb-10">
             <thead>
-              <tr className="bg-gray-100">
+              <tr className="bg-gray-100 text-gray-800">
                 <th className="border border-gray-400 p-3 text-sm">日付</th>
                 <th className="border border-gray-400 p-3 text-sm text-right">給料</th>
               </tr>
@@ -266,7 +294,7 @@ const SalesManagementSheet = () => {
             <tfoot>
               <tr className="bg-gray-50 font-bold">
                 <td className="border border-gray-400 p-3 text-right">合計金額</td>
-                <td className="border border-gray-400 p-3 text-right text-lg">¥{pdfData.total.toLocaleString()}</td>
+                <td className="border border-gray-400 p-3 text-right text-lg text-blue-600">¥{pdfData.total.toLocaleString()}</td>
               </tr>
             </tfoot>
           </table>
@@ -277,10 +305,11 @@ const SalesManagementSheet = () => {
       </div>
 
       <div className="max-w-7xl mx-auto">
+        {/* メインヘッダー */}
         <div className="flex justify-between items-center mb-2">
           <h1 className="text-3xl font-bold text-gray-800">営業チーム売上管理</h1>
           <div className="flex items-center gap-3">
-            <span className={`text-xs px-2 py-1 rounded-full border ${syncStatus === "synced" ? "bg-green-50 text-green-700 border-green-200" : "bg-yellow-50 text-yellow-700 border-yellow-200"}`}>
+            <span className={`text-xs px-2 py-1 rounded-full border transition-colors ${syncStatus === "synced" ? "bg-green-50 text-green-700 border-green-200" : "bg-yellow-50 text-yellow-700 border-yellow-200"}`}>
               {syncStatus === "synced" ? "同期OK" : "同期中…"}
             </span>
             <select
@@ -295,6 +324,7 @@ const SalesManagementSheet = () => {
           </div>
         </div>
 
+        {/* タブメニュー */}
         <div className="flex gap-2 mb-6 border-b border-gray-200 overflow-x-auto scrollbar-hide">
           <button onClick={() => setActiveTab("data")} className={`px-6 py-3 font-semibold whitespace-nowrap ${activeTab === "data" ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-600"}`}>📊 入力</button>
           <button onClick={() => setActiveTab("paystub")} className={`px-6 py-3 font-semibold whitespace-nowrap ${activeTab === "paystub" ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-600"}`}>📁 明細</button>
@@ -302,6 +332,7 @@ const SalesManagementSheet = () => {
           <button onClick={() => setActiveTab("settings")} className={`px-6 py-3 font-semibold whitespace-nowrap ${activeTab === "settings" ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-600"}`}>⚙️ 管理</button>
         </div>
 
+        {/* 📁 明細タブ */}
         {activeTab === "paystub" && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
             {Object.keys(memberPaystubs).length === 0 ? (
@@ -345,7 +376,7 @@ const SalesManagementSheet = () => {
           </div>
         )}
 
-        {/* --- その他のタブ (変更なし) --- */}
+        {/* 📊 入力タブ */}
         {activeTab === "data" && (
           <div className="bg-white rounded-lg shadow-md p-6 text-gray-700">
             <div className="flex justify-between items-center mb-4">
@@ -355,11 +386,11 @@ const SalesManagementSheet = () => {
             <div className="overflow-x-auto min-h-[400px]">
               <table className="w-full border-collapse">
                 <thead>
-                  <tr className="bg-gray-100">
+                  <tr className="bg-gray-100 text-gray-700">
                     <th className="border border-gray-300 px-4 py-2 text-left">日付</th>
                     <th className="border border-gray-300 px-4 py-2 text-left">担当</th>
                     <th className="border border-gray-300 px-4 py-2 text-right">売上</th>
-                    <th className="border border-gray-300 px-4 py-2 text-right">人件費</th>
+                    <th className="border border-gray-300 px-4 py-2 text-right font-bold">人件費</th>
                     <th className="border border-gray-300 px-4 py-2 text-right bg-yellow-50">粗利</th>
                     <th className="border border-gray-300 px-4 py-2 text-left w-64">備考</th>
                     <th className="border border-gray-300 px-4 py-2 text-center"></th>
@@ -376,8 +407,8 @@ const SalesManagementSheet = () => {
                         </select>
                       </td>
                       <td className="border border-gray-300 px-2 py-2"><input type="number" value={row.sales} onChange={(e) => updateRow(row.id, "sales", Number(e.target.value))} className="w-full px-2 py-1 border rounded text-right" /></td>
-                      <td className="border border-gray-300 px-2 py-2"><input type="number" value={row.cost} onChange={(e) => updateRow(row.id, "cost", Number(e.target.value))} className="w-full px-2 py-1 border rounded text-right" /></td>
-                      <td className="border border-gray-300 px-4 py-2 text-right font-bold bg-yellow-50 text-blue-600">¥{(row.sales - row.cost).toLocaleString()}</td>
+                      <td className="border border-gray-300 px-2 py-2"><input type="number" value={row.cost} onChange={(e) => updateRow(row.id, "cost", Number(e.target.value))} className="w-full px-2 py-1 border rounded text-right font-bold text-blue-600" /></td>
+                      <td className="border border-gray-300 px-4 py-2 text-right font-bold bg-yellow-50">¥{(row.sales - row.cost).toLocaleString()}</td>
                       <td className="border border-gray-300 px-2 py-2 relative h-[50px]">
                         <textarea
                           value={row.memo || ""}
@@ -395,6 +426,7 @@ const SalesManagementSheet = () => {
           </div>
         )}
 
+        {/* 📈 指標タブ */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -421,28 +453,36 @@ const SalesManagementSheet = () => {
                  </table>
                </div>
                <div className="lg:col-span-2 bg-white rounded-lg shadow-md p-6 overflow-x-auto">
-                 <h3 className="text-xl font-bold mb-4">日別×担当者 粗利マトリクス</h3>
+                 <h3 className="text-xl font-bold mb-4 text-gray-700">日別×担当者 粗利マトリクス</h3>
                  <table className="w-full border-collapse text-sm">
-                   <thead><tr className="bg-gray-100"><th className="border border-gray-300 px-3 py-2 sticky left-0 bg-gray-100">日付</th>{uniqueStaff.map((s) => (<th key={s} className="border border-gray-300 px-3 py-2 text-center">{s}</th>))}</tr></thead>
-                   <tbody>{uniqueDates.map((date) => (<tr key={date} className="hover:bg-gray-50"><td className="border border-gray-300 px-3 py-2 font-semibold sticky left-0 bg-white">{date.slice(5).replace("-", "/")}</td>{uniqueStaff.map((staff) => {const row = monthlyData.find(r => r.date === date && r.staff === staff);return (<td key={`${date}-${staff}`} className="border border-gray-300 px-3 py-2 text-right">{row ? (<span className="text-green-600 font-bold">¥{(row.sales-row.cost).toLocaleString()}</span>) : (<span className="text-gray-300">-</span>)}</td>);})}</tr>))}</tbody>
+                   <thead><tr className="bg-gray-100 text-gray-700"><th className="border border-gray-300 px-3 py-2 sticky left-0 bg-gray-100">日付</th>{uniqueStaff.map((s) => (<th key={s} className="border border-gray-300 px-3 py-2 text-center">{s}</th>))}</tr></thead>
+                   <tbody>{uniqueDates.map((date) => (<tr key={date} className="hover:bg-gray-50"><td className="border border-gray-300 px-3 py-2 font-semibold sticky left-0 bg-white text-gray-700">{date.slice(5).replace("-", "/")}</td>{uniqueStaff.map((staff) => {const row = monthlyData.find(r => r.date === date && r.staff === staff);return (<td key={`${date}-${staff}`} className="border border-gray-300 px-3 py-2 text-right">{row ? (<span className="text-green-600 font-bold">¥{(row.sales-row.cost).toLocaleString()}</span>) : (<span className="text-gray-300">-</span>)}</td>);})}</tr>))}</tbody>
                  </table>
                </div>
             </div>
           </div>
         )}
 
+        {/* ⚙️ 管理タブ */}
         {activeTab === "settings" && (
           <div className="bg-white rounded-lg shadow-md p-6 text-gray-700">
             <h2 className="text-xl font-bold mb-4">担当者リスト管理</h2>
             <div className="flex gap-2 mb-4">
-              <input type="text" value={newStaffName} onChange={(e) => setNewStaffName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addStaff()} placeholder="名前を入力" className="flex-1 px-4 py-2 border rounded-lg" />
-              <button onClick={addStaff} className="bg-green-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-green-700">追加</button>
+              <input 
+                type="text" 
+                value={newStaffName} 
+                onChange={(e) => setNewStaffName(e.target.value)} 
+                onKeyDown={(e) => e.key === "Enter" && addStaff()} 
+                placeholder="新しいインターン生の名前を入力" 
+                className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" 
+              />
+              <button onClick={addStaff} className="bg-green-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-green-700 transition-colors">追加</button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {staffList.map((staff) => (
                 <div key={staff} className="flex items-center justify-between bg-gray-50 px-4 py-3 rounded-lg border">
-                  <span className="font-medium">{staff}</span>
-                  <button onClick={() => removeStaff(staff)} className="text-red-400 hover:text-red-600"><Trash2 size={18} /></button>
+                  <span className="font-medium text-gray-700">{staff}</span>
+                  <button onClick={() => removeStaff(staff)} className="text-red-400 hover:text-red-600 transition-colors"><Trash2 size={18} /></button>
                 </div>
               ))}
             </div>
