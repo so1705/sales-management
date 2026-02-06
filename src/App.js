@@ -19,14 +19,14 @@ const SalesManagementSheet = () => {
   // Local initial loaders (fallback)
   // ----------------------------
   const loadDataFallback = () => [
-    { id: 1, date: "2025-01-06", staff: "山田太郎", sales: 50000, cost: 15000 },
-    { id: 2, date: "2025-01-06", staff: "佐藤花子", sales: 45000, cost: 15000 },
-    { id: 3, date: "2025-01-06", staff: "鈴木一郎", sales: 60000, cost: 18000 },
-    { id: 4, date: "2025-01-07", staff: "山田太郎", sales: 55000, cost: 15000 },
-    { id: 5, date: "2025-01-07", staff: "田中美咲", sales: 48000, cost: 15000 },
-    { id: 6, date: "2025-01-08", staff: "佐藤花子", sales: 52000, cost: 15000 },
-    { id: 7, date: "2025-01-08", staff: "鈴木一郎", sales: 58000, cost: 18000 },
-    { id: 8, date: "2025-01-08", staff: "田中美咲", sales: 51000, cost: 15000 },
+    { id: 1, date: "2025-01-06", staff: "山田太郎", sales: 50000, cost: 15000, memo: "" },
+    { id: 2, date: "2025-01-06", staff: "佐藤花子", sales: 45000, cost: 15000, memo: "" },
+    { id: 3, date: "2025-01-06", staff: "鈴木一郎", sales: 60000, cost: 18000, memo: "" },
+    { id: 4, date: "2025-01-07", staff: "山田太郎", sales: 55000, cost: 15000, memo: "" },
+    { id: 5, date: "2025-01-07", staff: "田中美咲", sales: 48000, cost: 15000, memo: "" },
+    { id: 6, date: "2025-01-08", staff: "佐藤花子", sales: 52000, cost: 15000, memo: "" },
+    { id: 7, date: "2025-01-08", staff: "鈴木一郎", sales: 58000, cost: 18000, memo: "" },
+    { id: 8, date: "2025-01-08", staff: "田中美咲", sales: 51000, cost: 15000, memo: "" },
   ];
 
   const loadStaffFallback = () => [
@@ -54,14 +54,11 @@ const SalesManagementSheet = () => {
   const [dataRows, setDataRows] = useState(loadDataFallback);
 
   // Firestore sync status
-  const [syncStatus, setSyncStatus] = useState("connecting"); // connecting | synced | error
+  const [syncStatus, setSyncStatus] = useState("connecting");
   const isApplyingRemote = useRef(false);
   const saveTimer = useRef(null);
 
-  // ★重要：Firestoreの初回読み込みが終わるまで保存禁止（初期化事故を防ぐ）
   const hasHydrated = useRef(false);
-
-  // ★重要：ローカル保存した時刻（古いsnapshotで巻き戻されないようにする）
   const lastLocalWriteAt = useRef(0);
 
   // ----------------------------
@@ -73,7 +70,6 @@ const SalesManagementSheet = () => {
     const unsub = onSnapshot(
       ref,
       async (snap) => {
-        // 初回: ドキュメントが無い場合は作成
         if (!snap.exists()) {
           try {
             isApplyingRemote.current = true;
@@ -84,8 +80,6 @@ const SalesManagementSheet = () => {
               updatedAt: now,
             });
             isApplyingRemote.current = false;
-
-            // ★初回同期完了扱い
             hasHydrated.current = true;
             setSyncStatus("synced");
             return;
@@ -101,7 +95,6 @@ const SalesManagementSheet = () => {
           const d = snap.data() || {};
           const remoteUpdatedAt = Number(d.updatedAt || 0);
 
-          // ★自分が書いた直後に「古いsnapshot」が来ても無視
           if (remoteUpdatedAt && remoteUpdatedAt < lastLocalWriteAt.current) {
             return;
           }
@@ -129,7 +122,6 @@ const SalesManagementSheet = () => {
     );
 
     return () => unsub();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ----------------------------
@@ -155,10 +147,7 @@ const SalesManagementSheet = () => {
   // Firestore: save (debounced)
   // ----------------------------
   const scheduleSave = () => {
-    // ★初回読み込み完了まで保存しない（初期化バグ潰し）
     if (!hasHydrated.current) return;
-
-    // snapshot適用中は保存しない
     if (isApplyingRemote.current) return;
 
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -169,13 +158,9 @@ const SalesManagementSheet = () => {
       } catch (e) {
         console.error(e);
         setSyncStatus("error");
-
-        // ★権限エラーが多いので、ここで分かるように出す
         const msg = String(e?.message || "");
         if (msg.includes("insufficient permissions") || msg.includes("permission")) {
-          alert(
-            "Firestoreの書き込み権限が無い可能性があります。\nFirebase Console → Firestore Database → ルール を確認してください。"
-          );
+          alert("Firestoreの書き込み権限が無い可能性があります。");
         }
       }
     }, 500);
@@ -183,7 +168,6 @@ const SalesManagementSheet = () => {
 
   useEffect(() => {
     scheduleSave();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staffList, dataRows]);
 
   // ----------------------------
@@ -200,13 +184,10 @@ const SalesManagementSheet = () => {
     const prev = staffList;
     const next = [...staffList, name];
 
-    // 先に画面反映（体感速度）
     setStaffList(next);
     setNewStaffName("");
 
-    // ★担当者は即保存（失敗したら戻す）
     try {
-      // hydration前ならまず待つ（=初期化事故回避）
       if (!hasHydrated.current) return;
       await writeToFirestore(next, dataRows);
       setSyncStatus("synced");
@@ -214,13 +195,6 @@ const SalesManagementSheet = () => {
       console.error(e);
       setSyncStatus("error");
       setStaffList(prev);
-
-      const msg = String(e?.message || "");
-      if (msg.includes("insufficient permissions") || msg.includes("permission")) {
-        alert(
-          "担当者を追加できません（Firestoreの書き込み権限が原因の可能性が高いです）。\nFirebase ConsoleのFirestoreルールを確認してください。"
-        );
-      }
     }
   };
 
@@ -230,10 +204,8 @@ const SalesManagementSheet = () => {
     const prev = staffList;
     const next = staffList.filter((s) => s !== staffName);
 
-    // 先に画面反映
     setStaffList(next);
 
-    // ★担当者は即保存（失敗したら戻す）
     try {
       if (!hasHydrated.current) return;
       await writeToFirestore(next, dataRows);
@@ -242,25 +214,17 @@ const SalesManagementSheet = () => {
       console.error(e);
       setSyncStatus("error");
       setStaffList(prev);
-
-      const msg = String(e?.message || "");
-      if (msg.includes("insufficient permissions") || msg.includes("permission")) {
-        alert(
-          "担当者を削除できません（Firestoreの書き込み権限が原因の可能性が高いです）。\nFirebase ConsoleのFirestoreルールを確認してください。"
-        );
-      }
     }
   };
 
   const addRow = () => {
-  const uid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const uid = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  setDataRows((prev) => [
-    ...prev,
-    { id: uid, date: selectedMonth + "-01", staff: "", sales: 0, cost: 0 },
-  ]);
-};
-
+    setDataRows((prev) => [
+      ...prev,
+      { id: uid, date: selectedMonth + "-01", staff: "", sales: 0, cost: 0, memo: "" },
+    ]);
+  };
 
   const deleteRow = (id) => {
     setDataRows(dataRows.filter((row) => row.id !== id));
@@ -275,12 +239,10 @@ const SalesManagementSheet = () => {
   const calculateProfit = (sales, cost) => sales - cost;
 
   // ----------------------------
-  // Month list (MIN_MONTH以降だけを生成)
+  // Month list
   // ----------------------------
   const generateMonths = () => {
     const months = [];
-
-    // MIN_MONTHから「今月 + 18ヶ月」まで（2024などは絶対出ない）
     const [minY, minM] = MIN_MONTH.split("-").map(Number);
     const start = new Date(minY, minM - 1, 1);
 
@@ -300,7 +262,6 @@ const SalesManagementSheet = () => {
 
   const availableMonths = useMemo(() => generateMonths(), []);
 
-  // selectedMonthが範囲外なら丸める
   useEffect(() => {
     if (!availableMonths.length) return;
     const maxMonth = availableMonths[0];
@@ -311,7 +272,6 @@ const SalesManagementSheet = () => {
     if (target > maxMonth) target = maxMonth;
 
     if (target !== selectedMonth) setSelectedMonth(target);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableMonths]);
 
   // ----------------------------
@@ -356,7 +316,7 @@ const SalesManagementSheet = () => {
   };
 
   // ----------------------------
-  // UI（ここから下はあなたのベース維持）
+  // UI
   // ----------------------------
   return (
     <div className="min-h-screen bg-gray-50 p-4">
@@ -427,7 +387,6 @@ const SalesManagementSheet = () => {
         {activeTab === "settings" && (
           <div className="bg-white rounded-lg shadow-md p-6">
             <h2 className="text-xl font-bold text-gray-700 mb-4">担当者リスト管理</h2>
-
             <div className="mb-6">
               <div className="flex gap-2 mb-4">
                 <input
@@ -447,7 +406,6 @@ const SalesManagementSheet = () => {
                 </button>
               </div>
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {staffList.map((staff) => (
                 <div
@@ -491,6 +449,7 @@ const SalesManagementSheet = () => {
                     <th className="border border-gray-300 px-4 py-2 text-right">売上</th>
                     <th className="border border-gray-300 px-4 py-2 text-right">人件費</th>
                     <th className="border border-gray-300 px-4 py-2 text-right bg-yellow-50">粗利 (自動)</th>
+                    <th className="border border-gray-300 px-4 py-2 text-left">備考</th>
                     <th className="border border-gray-300 px-4 py-2 text-center">削除</th>
                   </tr>
                 </thead>
@@ -538,6 +497,15 @@ const SalesManagementSheet = () => {
                       <td className="border border-gray-300 px-4 py-2 text-right font-semibold bg-yellow-50">
                         ¥{calculateProfit(Number(row.sales), Number(row.cost)).toLocaleString()}
                       </td>
+                      <td className="border border-gray-300 px-2 py-2">
+                        <input
+                          type="text"
+                          value={row.memo || ""}
+                          onChange={(e) => updateRow(row.id, "memo", e.target.value)}
+                          placeholder="備考"
+                          className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                        />
+                      </td>
                       <td className="border border-gray-300 px-2 py-2 text-center">
                         <button
                           onClick={() => deleteRow(row.id)}
@@ -552,7 +520,7 @@ const SalesManagementSheet = () => {
               </table>
 
               <p className="text-xs text-gray-500 mt-3">
-                ※日付を編集すると自動で日付順に並び替わります（同日なら担当者名→ID順）。
+                ※日付を編集すると自動で日付順に並び替わります。
               </p>
             </div>
           </div>
@@ -641,10 +609,7 @@ const SalesManagementSheet = () => {
                         {uniqueStaff.map((staff) => {
                           const profit = getProfit(date, staff);
                           return (
-                            <td
-                              key={`${date}-${staff}`}
-                              className="border border-gray-300 px-3 py-2 text-right"
-                            >
+                            <td key={`${date}-${staff}`} className="border border-gray-300 px-3 py-2 text-right">
                               {profit !== null ? (
                                 <span className="text-green-600 font-semibold">¥{profit.toLocaleString()}</span>
                               ) : (
