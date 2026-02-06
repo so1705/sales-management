@@ -66,12 +66,10 @@ const SalesManagementSheet = () => {
     const ref = doc(db, DOC_PATH.col, DOC_PATH.id);
     const unsub = onSnapshot(
       ref,
-      { includeMetadataChanges: true }, // メタデータ変更を監視
+      { includeMetadataChanges: true },
       async (snap) => {
-        // 【重要】自分が書き込み中の「未確定データ」なら更新しない
         if (snap.metadata.hasPendingWrites) return;
 
-        // 【最強のガード】今、入力欄(INPUTやTEXTAREA)を触っている最中なら、外部更新をブロックする
         const activeEl = document.activeElement;
         if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
           return; 
@@ -346,7 +344,7 @@ const SalesManagementSheet = () => {
               <h2 className="text-xl font-bold text-gray-700">データ入力シート - {selectedMonth.split("-")[0]}年{selectedMonth.split("-")[1]}月</h2>
               <button onClick={addRow} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"><Plus size={20} />行を追加</button>
             </div>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto min-h-[400px]">
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="bg-gray-100">
@@ -355,7 +353,7 @@ const SalesManagementSheet = () => {
                     <th className="border border-gray-300 px-4 py-2 text-right">売上</th>
                     <th className="border border-gray-300 px-4 py-2 text-right">人件費</th>
                     <th className="border border-gray-300 px-4 py-2 text-right bg-yellow-50">粗利 (自動)</th>
-                    <th className="border border-gray-300 px-4 py-2 text-left">備考</th>
+                    <th className="border border-gray-300 px-4 py-2 text-left w-64">備考</th>
                     <th className="border border-gray-300 px-4 py-2 text-center">削除</th>
                   </tr>
                 </thead>
@@ -380,8 +378,14 @@ const SalesManagementSheet = () => {
                       <td className="border border-gray-300 px-4 py-2 text-right font-semibold bg-yellow-50">
                         ¥{calculateProfit(Number(row.sales), Number(row.cost)).toLocaleString()}
                       </td>
-                      <td className="border border-gray-300 px-2 py-2">
-                        <input type="text" value={row.memo || ""} onChange={(e) => updateRow(row.id, "memo", e.target.value)} placeholder="備考" className="w-full px-2 py-1 border border-gray-300 rounded text-sm" />
+                      {/* 備考欄: クリックした時だけ浮き上がって広がる仕組み */}
+                      <td className="border border-gray-300 px-2 py-2 relative h-[50px]">
+                        <textarea
+                          value={row.memo || ""}
+                          onChange={(e) => updateRow(row.id, "memo", e.target.value)}
+                          placeholder="備考を入力..."
+                          className="absolute inset-x-2 top-2 h-8 w-[calc(100%-16px)] px-2 py-1 border border-gray-300 rounded text-sm transition-all duration-200 resize-none overflow-hidden focus:h-32 focus:z-20 focus:overflow-y-auto focus:shadow-xl bg-white"
+                        />
                       </td>
                       <td className="border border-gray-300 px-2 py-2 text-center">
                         <button onClick={() => deleteRow(row.id)} className="text-red-600 hover:text-red-800"><Trash2 size={18} /></button>
@@ -394,7 +398,6 @@ const SalesManagementSheet = () => {
           </div>
         )}
 
-        {/* ... (ダッシュボード部分は変更なし) ... */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
